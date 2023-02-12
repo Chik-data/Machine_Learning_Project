@@ -1,0 +1,372 @@
+---
+title: "Projet_Code_Source"
+author: "Sarah"
+date: "2023-01-01"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mlbench) 
+library(dslabs)
+library(fdm2id)
+library(flexclust)
+library(data.table)
+library(mclust)
+library(keras)
+library(grDevices)
+```
+
+###I- Implementation de l'algo  de spectral clustering et chargement des library de l'algo EM:
+```{r, warning=FALSE}
+spec_clus <- function (data, sigma, k){
+  precision <- 25 # définie la precision
+  my.data <- as.matrix(data) #créé une matrice de 150 lignes et 2 colonnes 
+  
+  n <- nrow(my.data) # n = nombre des colonnes du jeu des données
+  S <- my.data # charge les données dans une nouvelle variable
+  A <- matrix(rep(0,n*n) ,nrow = n ,ncol=n) # création  d'une matrice vide de n*n
+  
+  ## Algorithme de regroupement spectral
+  
+  ### Etape 1: Création d'une matrice (matrice d'affinité)__
+  
+  for (i in 1:n){
+    for(j in 1:n){
+      if (i != j){
+        # distance euclidienne
+        A[i,j] <- exp(- sqrt(sum((S[i,]-S[j,])^2)) /(2*(sigma^2)))
+      }
+    }  
+  }
+  
+  # test avec la précion d'ordre 5
+  round(A[1:10,1:10],precision)
+  
+  ### Etape 2: Calcul de la matrice D et construction de la matrice L
+  #2.1 Calcul de la matrice D
+  
+  D <- diag(n) # création d'une matrice diagonale vide 
+  for (i in 1:n){ 
+    #  somme de chaque ligne de A et insertion dans la matrice diagonale D
+    D[i,i] <- sum(A[i,])
+  }
+  
+  # test avec la précion d'ordre 5
+  round(D[1:10,1:10],precision)
+  
+  
+  ### 2.2 Construction de la matrice L en utilisant D
+  
+  # calcul de la racine carré de chaque élément de la matrice D  
+  D_sqrt <- sqrt(D) 
+  det(D_sqrt)
+  
+  # utilisons la fonction solve() de R pour calculer l'inverse d'une matrice
+  D_inv <- solve(D_sqrt)
+  D_inv
+  
+  # Calcul de L
+  L <- D_inv %*%  A %*% D_inv
+  L
+  
+  # test avec la précion d'ordre 5
+  round(L[1:10,1:10],precision)
+  
+  
+  ### Etape 3: Calculons les vecteur propres et définissons la matrice X 
+  #avec les k premiers vecteurs propres de L
+  
+  #vecteurs propres
+  
+  eig_vec <- eigen(L)$vectors
+  #eig_vec
+  dim(eig_vec)
+  # choix des nombres de classes (k)
+  #k <- 3
+  # calcul de 3 premiers vecteurs propres (k premiers valeurs propres)
+  X <- eig_vec[,(1 : k)]
+  X
+  
+  
+  ### Etape 4: Calcul de la matrice Y en utilisant la matrice X: 
+  #renormalisons chaque ligne de la matrice X pour avoir la longueur unité
+  
+  # Creations d'une matrice vide avec n lignes et k colonnes 
+  Y <- matrix(0, nrow = n, ncol = k)
+  
+  # FIci pour chaque élément de X, nous divisons par la racine carré de la somme chaque élément de X au carré
+  for(i in 1:n){
+    for(j in 1:k){
+      Y[i,j] <- X[i,j] / sqrt(sum(X[i,])^2)
+    }
+  }
+  
+  # Normalisons la matrice Y
+  #Y
+  
+  ## Etape 5: utilisons l'algorithme de K-Means 
+  # traitons chaque ligne de Y comme point de R^k, régroupons les en k régroupements via K-means
+  km <- kmeans(Y, k, nstart = 2000, algorithm = c("MacQueen"))
+  
+  a=fdm2id::intern(as.numeric(km$cluster), Y, eval = c ("intraclass", "interclass"), type = c("global"))
+  return(list(Classe=km$cluster, Inerties=data.frame(intraclass=a[1], interclass=a[2] ) ) )
+  
+}
+```
+
+###II Trouver la  meilleur valeur du paramètre sigma (celle qui minimise I_intra/I_tot)
+####II-1. Créer les 2 échantillons de jeux de données 
+####II-2. Trouver le sigma optimal relatif à ces ensembles
+
+```{r, warning=FALSE}
+
+# Donnees nmist:
+data = read_mnist()
+#View(data)
+str(data)
+images_train=data[["train"]][["images"]][1:1000,] # data$train$images[1:1000,]
+save(images_train, file="mnist_reduit")
+load("mnist_reduit")
+
+labels_train= data$train$labels[1:1000]
+summary(as.factor(labels_train))# nb d'enregistrements pour chaque chiffre
+save(labels_train, file="labels_reduit")
+load("labels_reduit")
+str(images_train)
+str(labels_train)
+
+```
+
+```{r, warning=FALSE}
+
+##Trouver le meilleur sigma 
+#Pr les données mnist:
+k_mnist=length(unique(labels_train))
+sigma =seq(4,13)#spec_clus fct uniquement pour ces valeurs
+#mm = matrix(NA, nrow = length(sigma), ncol = nrow(images_train))
+inert=list()
+for (j in 1:length(sigma) ){
+  inert[[j]]=spec_clus(images_train, sigma[j], k_mnist)$Inerties
+}
+col_intra=rbindlist(inert)$intraclass
+col_inter=rbindlist(inert)$interclass
+rap_iner=col_intra/(col_intra + col_inter)
+(sigma_opt_mnist=sigma[which.min(rap_iner)])
+
+#Pr les données Spirales:
+set.seed(2)
+sp<-mlbench.spirals(300,1.5,0.05)
+plot(sp$x, col= sp$classes)# on s'aperçoit que la plage des valeurs de x mesure environ 2 unités de x, Donc on choisit:
+d=2; k_spi=length(unique(sp$classes))
+
+(sigma=c(0.05,0.085,0.09,seq(0.05*d, 0.35*d, 0.05)))
+# implémenter sigma avec le rapport des inerties de Y
+#nn = matrix(NA, nrow = length(sigma), ncol = nrow(sp$x))
+inert=list()
+for (j in 1:length(sigma) ){
+  inert[[j]]=spec_clus(sp$x, sigma[j], k_spi)$Inerties
+}
+col_intra=data.table::rbindlist(inert)$intraclass
+col_inter=data.table::rbindlist(inert)$interclass
+rap_iner=col_intra/(col_intra + col_inter)
+(sigma_opt_spi=sigma[which.min(rap_iner)])
+#nn
+
+
+```
+
+```{r warning=FALSE}
+
+## Visualisons les données mnist:
+par(mfrow=c(4,3))
+for (k in 1:12){# 12_1ère images
+  m=matrix(images_train[k,], nrow =28, ncol =28 )
+  m=t(apply(m, 1, rev))# rev transpose l'odre des éléments d'1 vect.: la dernière col. se retrouve en 1ere position ds la mat.
+  image(m)
+}
+
+par(mfrow=c(4,4))
+cls_mnist=spec_clus(images_train, sigma_opt_mnist, k_mnist)$Classe
+ind=which(cls_mnist==8)
+for (k in 1:16){# 18 images correspondantes aux n° classé en cathégorie 8
+  mm=matrix(images_train[ind[k],], nrow =28, ncol =28 )
+  mm=t(apply(m, 1, rev))# rev transpose l'odre des éléments d'1 vect.: la dernière col. se retrouve en 1ere position ds la mat.
+  image(mm)
+}
+```
+
+```{r, warning=FALSE}
+mnist <- dataset_mnist()
+x_train <- mnist$train$x
+y_train <- mnist$train$y
+summary(as.factor(y_train))
+
+par(mfrow=c(4,3))
+for (i in 1:12) plot(as.raster(x_train[i,,] , max=255))
+
+##Classification par spec_clust sur MNIST:
+cls_mnist=spec_clus(images_train, sigma_opt_mnist, k_mnist)$Classe
+summary(as.factor(cls_mnist))
+summary(as.factor(labels_train))
+
+```
+
+```{r, warning=FALSE}
+table(labels_train, cls_mnist)
+mean(labels_train!=as.integer(cls_mnist))
+
+```
+Le test des algorithmes spectral clustering, k-means et EM sur nos jeux de données,
+nous forunissent notamment le partitionnement
+- des points de spirales en 2, pour les données du même nom
+- des chiffres en 10 pour les 1000 premières images du jeux de données MNIST.
+On rappel nôtre fonction spec_clus met plus de 15 minnutes
+à générer une classification à partir de 3000 images. Ainsi par soucis de temps,
+nous avons fait le choix d'une restriction aux 1000 premières données MNIST.
+
+Ainsi le test sur ces données nous a permis de générer les tables de contingences pour chaque algorithme.
+Notons qu'ici, il n'y a pas de bijection entre l'ensemble des chiffres arabes et nos 10 cathégories de chiffres.
+
+Sur la table de contingence du partitionnement généré par l'algorithme du spectral clustering,
+on observe que la majorité des images ont été classé dans la 10-ième classe ce qui n'est évidemment pas un bon résultat.
+Néanmoins au sein d'une classe, nous retrouvons des images dont la fréquence est encouragente:
+la classe 5 contient 21 images du chiffre 7
+les classes 4 et 8 contiennent 7 images respectivement du chiffre 1 et du chiffre 5
+la classe 8 contient aussi 8 images du chiffre 3
+Ainsi malgrès de nombresues images mal classées en la 10-ième cathégorie,
+d'autres correspondantes au même chiffre manuscrit, sont regroupées dans la même classe.
+
+
+```{r, warning=FALSE}
+##Affichons par exemple les images associées à une classification dans la cathégorie de chiffre 8:
+ind=which(cls_mnist==8)
+(p=length(ind))
+par(mfrow=c(4,4))
+for (i in 1:16) plot(as.raster(x_train[ind[i],,] , max=255) )
+par(mfrow=c(1,2))
+for (i in 17:18) plot(as.raster(x_train[ind[i],,] , max=255) )
+```
+On s'aperçoit que parmi les images classées en cathégorie du chiffre 8, les plus fréquentes avec un score de 8/18 et 7/18 correspondent respectivement à celle du chiffre 3 et 5.
+
+
+```{r, warning=FALSE}
+##classif engendrée par l'EM
+fit_mnist <-mclust::Mclust(images_train, G=1:k_mnist) 
+cl_EM_mnist=summary(fit_mnist)$classification
+summary(cl_EM_mnist)
+#cl_EM_mnist[which(cl_EM_mnist==0)]=1
+table(labels_train, cl_EM_mnist)
+mean(na.omit(labels_train!=as.integer(cl_EM_mnist)))
+```
+Sur la table de contingence du partitionnement généré par l'algorithme EM, on 
+observe une classification des images plus éparse que celle faite par spectral 
+clustering.
+En effet, une grille de lecture verticale indique que pour chaque classe, les 
+images d'un chiffre donné sont d'un effectif non négligeable. Par exemple, si 
+l'on regarde la composition de la classe 3, on observe qu'elle compte 72 images 
+du chiffre 3, 30 du chiffre 5, et 24 du chiffre 8 et 10 du chiffre 2.
+Ainsi contrairement au spectral clustering, cette table semble indiquer qu'au 
+sein de chaque classe se dégage 2 voir 3 groupes majoritaires correspondant à 
+3 chiffres.
+
+
+```{r, warning=FALSE}
+##Visualisons par exemple les images associées à une classification dans la cathégorie de chiffre 9:
+ind=which(cl_EM_mnist==9)
+(p=length(ind))
+par(mfrow=c(4,4))
+for (i in 1:16) plot(as.raster(x_train[ind[i],,] , max=255) )
+for (i in 17:32) plot(as.raster(x_train[ind[i],,] , max=255) )
+par(mfrow=c(2,2))
+for (i in 33:35) plot(as.raster(x_train[ind[i],,] , max=255) )
+```
+On s aperçoit que parmi les images classées en cathégorie du chiffre 9,
+la plus fréquente avec un score de 30/35 correspond au chiffre 0 tandis que 
+les 3 autres représentent le 3, le 5 et le 6 qui sont des chiffre dont la 
+manuscrit ressemble plus à un 0 qu à 1 par exemple. Ainsi sur au moins un 
+exemple, l algorithme EM semble meilleur que lalgorithme du spectral clustering 
+pour reconnaitre et classer les images correspondantes à un même chiffre.
+
+
+```{r, warning=FALSE}
+## classif engendrée par kmeans:
+cl_km_mnist=kmeans(images_train, centers=k_mnist, algorithm = c("MacQueen"))$cluster
+summary(as.factor(cl_km_mnist))
+#cl_km_mnist[which(cl_km_mnist==0)]=1
+table(labels_train, cl_km_mnist)
+mean(labels_train!=as.integer(cl_km_mnist))
+#Tout comme observé sur la table de contingence issus de l'algorithme EM, nous observons, 
+# au sein de chaque classe, des groupes d'images (associé à chiffre), majoritaires. 
+# Seules les classes 7 et 9 semble contenir semble reflêter la regroupement des chiffre 6 et 0
+# avec un effectif respectif de 75 et 74 images.
+```
+
+```{r, warning=FALSE}
+##Visualisons par exemple les images associées à une classification dans la classe 1 :
+ind=which(cl_km_mnist==0)
+(p=length(ind))
+par(mfrow=c(3,5))
+for (i in 1:15) plot(as.raster(x_train[ind[i],,] , max=255) )
+for (i in 16:28) plot(as.raster(x_train[ind[i],,] , max=255) )  
+# On observe que parmi les images classées en cathégorie 1, 
+# la plus fréquente avec un score de 23/28 correspond au chiffre 8 tandis que les 5 autres
+# représentent le 3 d effectif 3, le 0 d effectif 1 et le 5 d effectif 1. 
+# On comprend que le chiffre 5 soit classé avec le 8 dont les écritures manuscrites sont relativement semblables.
+
+```
+
+```{r, warning=FALSE}
+##sur les données spirales:
+plot(sp$x, col= sp$classes, main="Spirales concentriques originelles")## originales
+## spec_clust sur les spirales:
+cls_spi=as.factor(spec_clus(sp$x, 0.05, k_spi)$Classe)
+summary(cls_spi)
+table(sp$classes, cls_spi)
+plot(sp$x, col=cls_spi, main="Classification des spirales par spectral clustering")
+# Dans la partie concernant la méthode pour choisir la valeur optimale de sigma, 
+# nous avions trouvé, pour les données spirales, une valeur de 0.7. 
+# Cependant nous avons constaté que pour ce type de données, cette valeur ne permet pas, à la fois d'optimiser
+# les inerties intra et inter classe et la classification dont est capable le spectral clustering.
+#Nous l'obtenons néanmoins avec une valeur sigma_opt=0.05, trouvée par test successif de différentes incluses
+# dans le voisinage du centre des spirales.
+# Avec une telle valeur de sigma, nous obtenons une classification visualisable sur le graphe 
+# "Classification des spirales par spectral clustering". Ici, nous observons que les points
+# correspondants aux têtes initiales des 2 spirales sont regroupés en 2 classes distinctes.
+# Néanmoins, à partir de la position de coordonnées (-0.25, -0.75), les points de chaque partition commencent 
+# à intervertir leur groupe d'appartenance à l'une des spirales.
+# Ainsi la méthode de partitionnement du spectral clustering semble assez performante pour ces données et cette valeur de sigma. 
+
+```
+
+```{r, warning=FALSE}
+##k-means sur les données spirales:
+#cl_km_spi=as.factor(kmeans(sp$x, centers=k_spi, algorithm = c("MacQueen"))$cluster)
+summary(cl_km_spi)
+table(sp$classes, cl_km_spi)
+plot(sp$x ,col=cl_km_spi, main="Classification des spirales par kmeans")
+# Avec la méthode des k-means, le partionnement se fait certes en 2 classes, mais 
+# celles-ci ne respecte pas la répartition initiale des groupes. En effet, nous observons un regroupement
+# en deux parties qui dans plan peuvent être séparées par une droite. Ainsi, sans surprise, kmeans échoue
+# à l'exercice du partitionnement. En effet, contrairement au spectral clustering, qui transforme les données
+# en données formant des régions séparables par des régions convexe, kmeans ne les modifie pas.
+```
+
+```{r, warning=FALSE}
+##mclust sur les données spirales:
+#fit_spi <-mclust::Mclust(sp$x, G=1:k_spi)
+
+cl_EM_spi=summary(fit_spi)$classification
+summary(cl_EM_spi)
+plot(fit_spi , what = "classification", main="Classification des spirales par l EM")
+table(sp$classes, cl_EM_spi)
+
+#La méthode EM, semble aussi ne pas réussir à classer correctement les points. En effet, tout comme 
+# le partitionnement obtenu par les kmeans, celui issus de l'EM ne montre plus de spirales mais une dicotomie
+# dont la frontière semble aussi être une droite. Il est possible que ces données formant des spirales soient 
+# encore trop difficile pour l'algorithme EM. Néanmoins, nous pourrions le tester sur d'autres type de données.
+# Par exemple, des données avec une grande variance seront partionnées par l'EM de façon à ce que les frontières
+# de chaque cluster aient une forme ellipsoîdale voir parabollique.
+```
